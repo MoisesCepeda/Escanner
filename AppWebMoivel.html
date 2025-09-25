@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Recepción Whirlpool — OCR móvil</title>
+  <style>
+    :root { --bg:#0b1220; --card:#121a2b; --ink:#e6edf7; --muted:#9bb0d1; --accent:#58a6ff; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu;color:var(--ink);background:linear-gradient(180deg,#0b1220,#0e1527)}
+    header{padding:16px 20px;border-bottom:1px solid #1f2a44;position:sticky;top:0;background:#0b1220cc;backdrop-filter:blur(8px)}
+    h1{font-size:18px;margin:0}
+    main{padding:16px;max-width:980px;margin:0 auto}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .card{background:var(--card);border:1px solid #1f2a44;border-radius:16px;padding:14px}
+    .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}
+    label{font-size:12px;color:var(--muted)}
+    input,select,button,textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #28406d;background:#0c1730;color:var(--ink)}
+    button{cursor:pointer}
+    button.primary{background:var(--accent);color:#001a33;border:none;font-weight:600}
+    button.ghost{background:transparent;border:1px dashed #365c99}
+    .grid{overflow:auto;border-radius:12px;border:1px solid #1f2a44}
+    table{border-collapse:collapse;width:100%;min-width:680px;background:#0a1326}
+    th,td{border-bottom:1px solid #112147;padding:8px 10px;font-size:13px}
+    th{position:sticky;top:0;background:#0d1a33;text-align:left}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:2px 8px;border-radius:999px;background:#0e2247;border:1px solid #1f3f7f;color:#cfe2ff;font-size:12px}
+    .preview{display:grid;grid-template-columns:1fr;gap:8px}
+    video,canvas,.thumb{width:100%;max-height:320px;border-radius:12px;background:#000}
+    .thumb{object-fit:contain;border:1px solid #1f2a44}
+    .hint{font-size:12px;color:var(--muted)}
+    .row-actions{display:flex;gap:8px}
+  </style>
+  <!-- Tesseract (OCR en el navegador) -->
+  <script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- SheetJS (para generar Excel .xlsx) -->
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+  <!-- HEIC->JPEG en navegador (para iPhone) -->
+  <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Recepción Whirlpool — OCR móvil</h1>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="controls">
+        <div>
+          <label>CEDIS</label>
+          <input id="cedis" value="RM00" />
+        </div>
+        <div>
+          <label>Fecha</label>
+          <input id="fecha" type="date" />
+        </div>
+        <div>
+          <label>Idioma OCR</label>
+          <select id="langs" multiple size="2">
+            <option value="spa" selected>Español (spa)</option>
+            <option value="eng" selected>Inglés (eng)</option>
+          </select>
+          <div class="hint">Usa Ctrl/⌘ para seleccionar varios</div>
+        </div>
+        <div>
+          <label>Webhook Google Apps Script (opcional)</label>
+          <input id="webhook" placeholder="https://script.google.com/macros/s/.../exec" />
+          <div class="hint">Si lo llenas, cada fila también se enviará a tu Google Sheet.</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card" style="flex:1 1 340px;min-width:280px">
+          <div class="preview">
+            <video id="video" playsinline muted autoplay></video>
+            <canvas id="canvas" class="thumb" hidden></canvas>
+          </div>
+          <div class="row" style="margin-top:8px;align-items:center">
+            <button id="btnStart" class="ghost">📷 Iniciar cámara</button>
+            <button id="btnShot" class="primary">Capturar & OCR</button>
+            <label class="pill"><input id="kiosk" type="checkbox" /> Modo kiosco (auto)</label>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label class="pill">o sube foto</label>
+            <input id="file" type="file" accept="image/*" capture="environment" />
+          </div>
+          <div class="hint">Tip: acércate a la placa, evita reflejos y llena la pantalla con la etiqueta.</div>
+        </div>
+
+        <div class="card" style="flex:2 1 420px;min-width:320px">
+          <label>Texto detectado (puedes editar):</label>
+          <textarea id="textOut" rows="10" placeholder="Texto OCR aquí..."></textarea>
+          <div class="row" style="margin-top:8px">
+            <button id="btnParse" class="ghost">🔎 Detectar Modelo/Serie</button>
+            <button id="btnAdd" class="primary">➕ Agregar fila a la tabla</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <div class="row" style="align-items:center;justify-content:space-between">
+        <div><span class="pill" id="status">Listo</span></div>
+        <div class="row-actions">
+          <button id="btnExport" class="primary">⬇️ Exportar a Excel</button>
+          <button id="btnClear" class="ghost">🗑️ Limpiar tabla</button>
+        </div>
+      </div>
+      <div class="grid" style="margin-top:10px">
+        <table id="tbl">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Fecha</th>
+              <th>CEDIS</th>
+              <th>Modelo</th>
+              <th>Serie</th>
+              <th>Confianza</th>
+              <th>Archivo/Fuente</th>
+              <th>Texto Bruto</th>
+              <th>—</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+<script>
+// ===== Utilidades =====
+const $ = (q)=>document.querySelector(q);
+const statusPill = (t)=>{ const el = document.getElementById('status'); el.textContent=t; };
+const todayISO = ()=>{
+  const d = new Date();
+  const off = d.getTimezoneOffset();
+  const dLocal = new Date(d.getTime() - off*60000);
+  return dLocal.toISOString().slice(0,10);
+};
+
+// ===== Estado =====
+let stream = null;
+let reader = null; // Tesseract worker
+let rowId = 1;
+
+const tblBody = document.querySelector('#tbl tbody');
+const inputs = {
+  cedis: $('#cedis'),
+  fecha: $('#fecha'),
+  langs: $('#langs'),
+  webhook: $('#webhook'),
+  video: $('#video'),
+  canvas: $('#canvas'),
+  file: $('#file'),
+  textOut: $('#textOut'),
+  kiosk: $('#kiosk'),
+};
+inputs.fecha.value = todayISO();
+
+// ===== OCR =====
+async function ensureReader(){
+  if (reader) return reader;
+  statusPill('Cargando OCR…');
+  reader = await Tesseract.createWorker();
+  const langs = [...inputs.langs.options].filter(o=>o.selected).map(o=>o.value);
+  await reader.loadLanguage(langs.join('+'));
+  await reader.initialize(langs.join('+'));
+  await reader.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_/ ' });
+  statusPill('OCR listo');
+  return reader;
+}
+
+function drawToCanvasFromVideo(){
+  const v = inputs.video;
+  const c = inputs.canvas;
+  const w = v.videoWidth, h = v.videoHeight;
+  if (!w || !h) return null;
+  c.width = w; c.height = h; c.hidden=false;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(v,0,0,w,h);
+  return c;
+}
+
+// HEIC -> JPEG si hace falta
+async function ensureJpegBlob(file) {
+  const t = (file.type || '').toLowerCase();
+  const n = (file.name || '').toLowerCase();
+  const isHeic = t.includes('heic') || t.includes('heif') || n.endsWith('.heic') || n.endsWith('.heif');
+  if (!isHeic) return file;
+  try {
+    const out = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
+    return out instanceof Blob ? out : out[0];
+  } catch (e) {
+    console.warn('Fallo HEIC → JPEG', e);
+    throw new Error('No se pudo convertir HEIC. En iPhone: Ajustes → Cámara → Formatos → “Más compatible”.');
+  }
+}
+
+async function canvasFromFile(file){
+  const blob = await ensureJpegBlob(file);
+  // Intento con createImageBitmap
+  try {
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    return c;
+  } catch (_) { /* fallback */ }
+  // Fallback universal
+  const dataUrl = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = rej;
+    fr.readAsDataURL(blob);
+  });
+  const img = await new Promise((res, rej) => {
+    const el = new Image();
+    el.onload = () => res(el);
+    el.onerror = rej;
+    el.src = dataUrl;
+  });
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext('2d').drawImage(img, 0, 0);
+  return c;
+}
+
+function preprocessCanvas(c){
+  // Gris + umbral adaptativo simple
+  const ctx = c.getContext('2d');
+  const {width:w,height:h} = c;
+  const img = ctx.getImageData(0,0,w,h);
+  const data = img.data;
+  const gray = new Uint8ClampedArray(w*h);
+  for(let i=0,j=0;i<data.length;i+=4, j++){
+    gray[j] = (data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114)|0;
+  }
+  const out = new Uint8ClampedArray(w*h*4);
+  const rad = 8;
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      let sum=0, cnt=0;
+      for(let dy=-rad;dy<=rad;dy++){
+        const yy=y+dy; if(yy<0||yy>=h) continue;
+        for(let dx=-rad;dx<=rad;dx++){
+          const xx=x+dx; if(xx<0||xx>=w) continue;
+          sum += gray[yy*w+xx]; cnt++;
+        }
+      }
+      const mean = sum/cnt - 5;
+      const g = gray[y*w+x];
+      const v = g>mean?255:0;
+      const k=(y*w+x)*4; out[k]=out[k+1]=out[k+2]=v; out[k+3]=255;
+    }
+  }
+  const img2 = new ImageData(out,w,h);
+  ctx.putImageData(img2,0,0);
+  return c;
+}
+
+async function doOCRfromCanvas(c, sourceLabel){
+  await ensureReader();
+  statusPill('Leyendo…');
+  const res = await reader.recognize(c);
+  const { data } = res;
+  inputs.textOut.value = (data.text||'').trim();
+  // Guardar palabras para buscar SER -> siguiente token
+  window.__ocr_words = (data.words || []).map(w => ({
+    text: (w.text||'').trim(),
+    conf: w.confidence ?? w.conf,
+  }));
+  statusPill(`Listo: ${sourceLabel}`);
+}
+
+// ===== Regex Modelo/Serie (Whirlpool: MOD./SER. prioridad) =====
+const RE_MODELO = /\b(?:MOD\.?|MODELO|MODEL|MDL)\b[^\w]{0,3}([A-Z0-9][A-Z0-9\-._]{2,})/i;
+// Serie: 8–12 con mayoría dígitos
+const RE_SERIE  = /\b(?:SER\.?|SERIAL|S\/N|SN)\b[^\w]{0,3}([A-Z0-9]{8,12})\b/i;
+// Fallbacks
+const RE_MODELO_FALLBACK = /\b([A-Z0-9][A-Z0-9\-._]{4,})\b/g;
+const RE_SERIE_FALLBACK  = /\b([A-Z0-9]{8,12})\b/g;
+
+// Utilidades serie
+function countDigits(s){ return (s.match(/\d/g)||[]).length; }
+function normalizeSerial(raw){
+  if(!raw) return null;
+  let s = raw.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  s = s.replace(/O/g,'0').replace(/[IL]/g,'1').replace(/B/g,'8').replace(/Z/g,'2').replace(/S/g,'5');
+  if(s.length>=8 && s.length<=12 && countDigits(s)>=5) return s;
+  return raw.toUpperCase();
+}
+function looksLikeSerial(s){
+  const u = (s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  return u.length>=8 && u.length<=12 && countDigits(u)>=5;
+}
+
+function parseModelSerial(fullText){
+  const t = (fullText||'').replace(/[\t ]+/g,' ').replace(/\u00A0/g,' ').trim();
+  let modelo = null, serie = null;
+
+  // 1) Serie por proximidad: "SER" => siguiente token (o los 2 siguientes concatenados)
+  if (Array.isArray(window.__ocr_words) && window.__ocr_words.length){
+    const W = window.__ocr_words.map(w => ({...w, up:(w.text||'').toUpperCase()}));
+    for(let i=0;i<W.length;i++){
+      if(/^SER\.?$/.test(W[i].up) || /^S\/N$/.test(W[i].up) || /^SN$/.test(W[i].up)){
+        const cand1 = (W[i+1]?.up||'').replace(/[^A-Z0-9]/g,'');
+        const cand2 = ((W[i+1]?.up||'') + (W[i+2]?.up||'')).replace(/[^A-Z0-9]/g,'');
+        const cands = [cand1, cand2].filter(Boolean);
+        const best = cands.find(looksLikeSerial);
+        if (best){ serie = normalizeSerial(best); break; }
+      }
+    }
+  }
+
+  // 2) Regex etiquetada
+  if (!serie){
+    const s1 = t.match(RE_SERIE);
+    if (s1){
+      const n = normalizeSerial(s1[1]);
+      if (looksLikeSerial(n)) serie = n;
+    }
+  }
+
+  // 3) Modelo por etiqueta
+  const m1 = t.match(RE_MODELO);
+  if (m1){
+    modelo = (m1[1]||'').toUpperCase().replace(/[ .:\-_/]+$/,'');
+  }
+
+  // 4) Fallbacks si faltan
+  if (!modelo){
+    const cands = [...t.matchAll(RE_MODELO_FALLBACK)]
+      .map(m=>m[1].toUpperCase())
+      .filter(c => /[A-Z].*\d|\d.*[A-Z]/.test(c));
+    if (cands.length) modelo = cands.sort((a,b)=>b.length-a.length)[0];
+  }
+  if (!serie){
+    const cands = [...t.matchAll(RE_SERIE_FALLBACK)]
+      .map(m=>normalizeSerial(m[1]))
+      .filter(looksLikeSerial);
+    if (cands.length) serie = cands.sort((a,b)=>b.length-a.length)[0];
+  }
+
+  if (modelo && serie && modelo === serie) serie = null; // evitar duplicados
+  return {modelo, serie};
+}
+
+// ===== Tabla =====
+function addRow(obj){
+  const tr = document.createElement('tr');
+  const idx = rowId++;
+  const cells = [
+    idx,
+    obj.fecha,
+    obj.cedis,
+    obj.modelo||'',
+    obj.serie||'',
+    obj.confianza?.toFixed?.(3) ?? '',
+    obj.fuente||'',
+    obj.texto?.slice?.(0,500) ?? '',
+  ];
+  for(const c of cells){
+    const td = document.createElement('td');
+    td.contentEditable = true;
+    td.textContent = c;
+    tr.appendChild(td);
+  }
+  const tdActions = document.createElement('td');
+  const btnDel = document.createElement('button');
+  btnDel.textContent = 'Eliminar';
+  btnDel.className='ghost';
+  btnDel.onclick = ()=> tr.remove();
+  tdActions.appendChild(btnDel);
+  tr.appendChild(tdActions);
+  tblBody.appendChild(tr);
+}
+
+function tableToSheetData(){
+  const rows = [];
+  for (const tr of tblBody.querySelectorAll('tr')){
+    const tds = [...tr.querySelectorAll('td')];
+    if(!tds.length) continue;
+    rows.push([
+      tds[0].textContent.trim(), // #
+      tds[1].textContent.trim(), // Fecha
+      tds[2].textContent.trim(), // CEDIS
+      tds[3].textContent.trim(), // Modelo
+      tds[4].textContent.trim(), // Serie
+      tds[5].textContent.trim(), // Confianza
+      tds[6].textContent.trim(), // Archivo
+      tds[7].textContent.trim(), // TextoBruto
+    ]);
+  }
+  return rows;
+}
+
+function exportExcel(){
+  const header = ["#","Fecha","CEDIS","Modelo","Serie","Confianza","Archivo","TextoBruto"];
+  const rows = tableToSheetData();
+  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'recepcion');
+  const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+  const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'recepcion.xlsx';
+  a.click();
+}
+
+async function sendWebhook(row){
+  const url = inputs.webhook.value.trim();
+  if(!url) return;
+  try{
+    await fetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        fecha: row[1], cedis: row[2], modelo: row[3], serie: row[4],
+        confianza: row[5], archivo: row[6], texto: row[7]
+      })
+    });
+  }catch(e){ console.warn('Webhook fallo', e); }
+}
+
+// ===== Beep corto para kiosco (necesita gesto de usuario en iOS) =====
+function beep(){ new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAAAABAACAgICAgA==").play().catch(()=>{}); }
+
+// ===== Eventos =====
+$('#btnStart').onclick = async ()=>{
+  try{
+    // iPhone/Safari requiere HTTPS o localhost.
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 }, height:{ ideal:1080 } },
+      audio:false
+    });
+    inputs.video.srcObject = stream;
+    await inputs.video.play();
+    statusPill('Cámara lista');
+  }catch(e){
+    console.warn(e);
+    statusPill('No se pudo abrir la cámara. Usa “sube foto”.');
+    inputs.file.click(); // fallback
+  }
+};
+
+$('#btnShot').onclick = async ()=>{
+  let c = drawToCanvasFromVideo();
+  if(!c){ statusPill('Cámara no lista'); return; }
+  c = preprocessCanvas(c);
+  await doOCRfromCanvas(c, 'captura');
+};
+
+inputs.file.onchange = async (e)=>{
+  const f = e.target.files?.[0]; if(!f) return;
+  let c = await canvasFromFile(f);
+  c = preprocessCanvas(c);
+  await doOCRfromCanvas(c, f.name);
+};
+
+$('#btnParse').onclick = ()=>{
+  const t = inputs.textOut.value || '';
+  const {modelo, serie} = parseModelSerial(t);
+  alert(`Modelo: ${modelo||'-'}\nSerie: ${serie||'-'}`);
+};
+
+$('#btnAdd').onclick = async ()=>{
+  const t = inputs.textOut.value || '';
+  const {modelo, serie} = parseModelSerial(t);
+  const row = {
+    fecha: inputs.fecha.value || todayISO(),
+    cedis: inputs.cedis.value || 'RM00',
+    modelo, serie,
+    confianza: 0,
+    fuente: 'camara/foto',
+    texto: t
+  };
+  addRow(row);
+  const arr = [rowId-1, row.fecha, row.cedis, row.modelo||'', row.serie||'', row.confianza, row.fuente, row.texto];
+  await sendWebhook(arr);
+};
+
+$('#btnExport').onclick = exportExcel;
+$('#btnClear').onclick = ()=>{ tblBody.innerHTML=''; rowId=1; };
+
+// ===== Modo Kiosco =====
+let kioskTimer = null;
+const KIOSK_INTERVAL_MS = 1600;
+
+async function kioskTick(){
+  if (!inputs.kiosk.checked) return;
+  const c0 = drawToCanvasFromVideo();
+  if (!c0){ statusPill('Cámara no lista'); return; }
+  const c = preprocessCanvas(c0);
+  await doOCRfromCanvas(c, 'kiosco');
+  const t = inputs.textOut.value || '';
+  const {modelo, serie} = parseModelSerial(t);
+  const row = {
+    fecha: inputs.fecha.value || todayISO(),
+    cedis: inputs.cedis.value || 'RM00',
+    modelo, serie,
+    confianza: 0,
+    fuente: 'camara/kiosco',
+    texto: t
+  };
+  addRow(row);
+  const arr = [rowId-1, row.fecha, row.cedis, row.modelo||'', row.serie||'', row.confianza, row.fuente, row.texto];
+  await sendWebhook(arr);
+  beep();
+}
+
+inputs.kiosk.onchange = (e)=>{
+  if (e.target.checked){
+    statusPill('Kiosco: encendido');
+    kioskTimer = setInterval(kioskTick, KIOSK_INTERVAL_MS);
+  } else {
+    statusPill('Kiosco: apagado');
+    clearInterval(kioskTimer);
+  }
+};
+
+// iOS: “desbloquear” audio para el beep tras primer toque
+window.addEventListener('touchstart', ()=>{ new Audio().play().catch(()=>{}); }, {once:true});
+</script>
+</body>
+</html>
